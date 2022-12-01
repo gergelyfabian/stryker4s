@@ -69,9 +69,36 @@ class MutantRunner(
     val targetDir = config.baseDir / "target"
     for {
       _ <- Resource.eval(Files[IO].createDirectories(targetDir))
-      tmpDir <- Files[IO].tempDirectory(Some(targetDir), "stryker4s-", None)
+      tmpDir <- prepareTmpDir(targetDir)
       _ <- Resource.eval(setupFiles(tmpDir, mutatedFiles.toSeq))
     } yield tmpDir
+  }
+
+  private def prepareTmpDir(targetDir: Path): Resource[IO, Path] = {
+    if (config.staticTmpDir) {
+      val staticTmpDir = targetDir / "stryker4s-tmpDir"
+      Resource
+        .eval(Files[IO].createDirectory(staticTmpDir).map(_ => staticTmpDir))
+        .onFinalizeCase(staticTmpDirFinalizeCase(staticTmpDir))
+    } else {
+      Files[IO].tempDirectory(Some(targetDir), "stryker4s-", None)
+    }
+  }
+
+  private def staticTmpDirFinalizeCase(staticTmpDir: Path): Resource.ExitCase => IO[Unit] = {
+    case Resource.ExitCase.Succeeded | Resource.ExitCase.Canceled =>
+      Files[IO].deleteRecursively(staticTmpDir)
+    case _: Resource.ExitCase.Errored =>
+      // Enable the user do some manual actions on the staticTmpDir before she retries.
+      if (config.staticTmpDirLeaveAfterError) {
+        IO(
+          log.warn(
+            s"Not deleting $staticTmpDir after error (turn off staticTmpDirLeaveAfterError to disable this). Please clean it up manually."
+          )
+        )
+      } else {
+        Files[IO].deleteRecursively(staticTmpDir)
+      }
   }
 
   private def setupFiles(tmpDir: Path, mutatedFiles: Seq[MutatedFile]): IO[Unit] =
